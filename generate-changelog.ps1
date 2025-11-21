@@ -244,6 +244,34 @@ function Convert-JiraLink([string]$key, [string]$jiraBaseUrl) {
     return "[$key]($jiraBaseUrl$key)"
 }
 
+function CreateGitlabRelease([string]$versionTag, [string]$version, [string]$changelog) {
+    $accessToken = [System.Environment]::GetEnvironmentVariable("RELEASENOTES_ACCESSTOKEN")
+    if (-not $accessToken) {
+        Write-Host "Environment variables not found. Skipping GitLab release creation."
+        return $false;
+    }
+    
+    $projectName = [System.Environment]::GetEnvironmentVariable("CI_PROJECT_TITLE")
+    $projectId = [System.Environment]::GetEnvironmentVariable("CI_PROJECT_ID")
+    $apiUrl = [System.Environment]::GetEnvironmentVariable("CI_API_V4_URL")
+
+    $json = ConvertTo-Json @{
+        name        = "$projectName $version release"
+        tag_name    = "$versionTag"
+        description = $changelog
+        released_at = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+
+    Invoke-RestMethod -Uri "$apiUrl/projects/$projectId/releases" `
+        -ContentType "application/json" `
+        -Method Post `
+        -Headers @{"PRIVATE-TOKEN" = "$accessToken" } `
+        -Body ($json)
+        -ErrorAction Stop
+    Write-Host "GitLab release created for tag $versionTag."
+    return $true;
+}
+
 if (-not (ValidateEnv)) {
     exit 1
 }
@@ -263,5 +291,12 @@ $parsed = ParseLogs $raw
 $categorized = Categorize $parsed
 $changelog = CreateMarkdown $tags.Version $tags.PreviousTag $tags.LatestTag $tags.ReleaseDate $categorized
 
-Set-Content -Encoding UTF8 -Path $OutputFile -Value $changelog
-Write-Host "Changelog written to $OutputFile"
+if ($CreateRelease) {
+    $releaseCreated = CreateGitlabRelease $tags.VersionTag $tags.Version $changelog
+}
+
+if (-not $releaseCreated) {
+    Write-Host "Writing changelog to file as no release was created."
+    Set-Content -Encoding UTF8 -Path $OutputFile -Value $changelog
+    Write-Host "Changelog written to $OutputFile"
+}
